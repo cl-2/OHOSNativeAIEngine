@@ -1,0 +1,96 @@
+# ============================================================
+# OHOS Native AI Engine
+# ============================================================
+
+# --- Build outputs ---
+**/build/
+**/build/**/*
+out/
+
+# --- IDE / Editor ---
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*~
+*.bak
+
+# --- OHOS / DevEco Studio ---
+.hvigor/
+oh_modules/
+entry/oh_modules/
+.local/
+local.properties
+*.hsp
+*.app
+
+# --- Model files (large, need separate download) ---
+/models/
+entry/src/main/resources/rawfile/models/
+entry/src/main/assets/models/
+**/*.onnx
+**/*.tflite
+**/*.gguf
+
+# --- Native prebuilt libraries & versioned .so ---
+entry/libs/
+entry/src/main/cpp/libs/
+**/*.so
+**/*.so.*
+
+# --- GitHub Actions CI (personal project, not needed for now) ---
+.github/
+
+# --- Docs (WIP, not publishing yet) ---
+docs/
+
+# --- Embedded sherpa-onnx git repo (keep c-api.h, use submodule if needed) ---
+entry/src/main/cpp/sherpa-onnx/
+
+# --- Windows prebuilt ---
+/sherpa-onnx-win/
+
+# --- VCPKG installed (vcpkg.json manifest is enough) ---
+/vcpkg/
+/vcpkg_installed/
+
+# --- CMake ---
+CMakeUserPresets.json
+.cxx
+
+# --- LSP / clangd ---
+.clangd
+.clang-tidy
+.clang-format
+
+# --- OS metadata ---
+.DS_Store
+Thumbs.db
+
+# --- Runtime logs & temp files ---
+*.log
+!oh-package-lock.json5
+crash_log.txt
+native_ai_log.txt
+stderr.txt
+stdout.txt
+temp*.txt
+TtsWorker_handler.txt
+payload.json
+
+# --- Compiled binaries ---
+*.exe
+*.obj
+*.dll
+*.pdb
+*.lib
+*.a
+*.so
+
+# --- Test artifacts & analyzer ---
+.test/
+.appanalyzer/
+.backup/

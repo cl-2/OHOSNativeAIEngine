@@ -1,0 +1,9 @@
+{
+  "name": "native-ai-engine",
+  "version": "1.0.0",
+  "description": "Cross-platform Native AI Engine",
+  "dependencies": [
+    "nlohmann-json"
+  ],
+  "builtin-baseline": "22d9c655dc24ad24c6cac27607005e619ce46740"
+}

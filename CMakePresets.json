@@ -1,0 +1,55 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "windows-vcpkg",
+            "displayName": "Windows (vcpkg + Qt6)",
+            "description": "使用 vcpkg 管理依赖 (Qt6 + nlohmann-json)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/windows",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "PLATFORM": "WINDOWS",
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
+            }
+        },
+        {
+            "name": "windows-vs",
+            "displayName": "Windows (Visual Studio)",
+            "description": "使用 Visual Studio 生成器 + vcpkg",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build/vs2022",
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "cacheVariables": {
+                "PLATFORM": "WINDOWS",
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+                "VCPKG_TARGET_TRIPLET": "x64-windows"
+            }
+        },
+        {
+            "name": "ohos",
+            "displayName": "HarmonyOS",
+            "description": "HarmonyOS 交叉编译",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/ohos",
+            "cacheVariables": {
+                "PLATFORM": "OHOS",
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-harmonyos.cmake"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows-vcpkg",
+            "configurePreset": "windows-vcpkg"
+        }
+    ]
+}
