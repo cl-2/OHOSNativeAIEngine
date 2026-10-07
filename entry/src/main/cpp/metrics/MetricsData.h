@@ -39,15 +39,37 @@ enum class MetricType : uint8_t {
     // === LLM 指标 (从 ArkTS 侧采集) ===
     LlmLatencyMs = 8,           // LLM 响应延迟(ms)
 
-    // === 预留：后续新增直接在这里加，不影响已有值 ===
-    // JankFrameDuration = 9,
-    // CpuUsagePercent = 10,
-    // MemoryUsageMb = 11,
-    // AudioPipelineLatencyMs = 12,
-    // WakeWordLatencyMs = 13,
-    // FullDuplexStateTransition = 14,
+    // === 音频管线 ===
+    AudioPipelineTotalMs = 9,   // FeedAudio 总耗时(ms)
+    DcFilterLatencyUs = 10,     // DC 阻塞滤波器耗时(微秒)
+    NoiseSuppressLatencyUs = 11, // 噪声抑制耗时(微秒)
+    AecLatencyUs = 12,          // AEC 处理耗时(微秒)
 
-    Count = 9                   // 当前定义的指标总数（也是下一个新指标的 ID）
+    // === 端到端关键体验与资源 ===
+    LlmFirstTokenMs = 13,       // LLM 首 Token 延迟(ms)
+    LlmTokensPerSec = 14,       // LLM 平均生成速度(token/s)
+    TtsFirstChunkMs = 15,       // TTS 首音频块延迟(ms)
+    TtsRtf = 16,                // TTS 生成耗时 / 音频时长
+    TtsQueueMs = 17,            // TTS 待播放 PCM 时长(ms)
+    ProcessRssMb = 18,          // 当前进程 RSS(MB)
+    ProcessPeakMb = 19,         // 当前进程历史峰值 RSS(MB)
+    TtsThreadCount = 20,        // 当前 TTS 推理线程数
+
+    LlmPromptTokens = 21,       // 本轮 prompt token 数
+    LlmGeneratedTokens = 22,    // 本轮实际生成 token 数
+    LlmPrefillMs = 23,          // prompt prefill 耗时(ms)
+    LlmDecodeMs = 24,           // 生成阶段总耗时(ms)
+    LlmBackendSelectMs = 25,    // HWCAP 检测与候选后端选择耗时(ms)
+    LlmBackendLoadMs = 26,      // 目标 CPU backend 动态库加载耗时(ms)
+    LlmModelLoadMs = 27,        // GGUF 模型映射与元数据加载耗时(ms)
+    LlmContextInitMs = 28,      // llama context / KV cache 初始化耗时(ms)
+    CpuDotprod = 29,            // 当前 CPU 是否支持 DotProd (0/1)
+    CpuFp16 = 30,               // 当前 CPU 是否支持 FP16 vector arithmetic (0/1)
+    LlmBackendTier = 31,        // 0=ARMv8, 1=DotProd, 2=DotProd+FP16
+    AsrOrphanPartialReset = 32, // 未形成有效 VAD 语音段的 partial 清理事件
+    AsrFillerDiscard = 33,      // 纯语气词 final/endpoint 丢弃事件
+    AsrDecoderReset = 34,       // 由 ASR 解码线程串行执行的 stream reset
+    Count = 35                  // 当前定义的指标总数
 };
 
 // ============================================================
@@ -97,6 +119,32 @@ inline std::string MetricTypeToString(MetricType type) {
         case MetricType::RingBufferFillRate:    return "ring_buffer_fill_rate";
         case MetricType::AudioChunkSize:        return "audio_chunk_size";
         case MetricType::LlmLatencyMs:          return "llm_latency_ms";
+        case MetricType::AudioPipelineTotalMs:  return "audio_pipeline_total_ms";
+        case MetricType::DcFilterLatencyUs:     return "dc_filter_latency_us";
+        case MetricType::NoiseSuppressLatencyUs:return "noise_suppress_latency_us";
+        case MetricType::AecLatencyUs:          return "aec_latency_us";
+        case MetricType::LlmFirstTokenMs:       return "llm_first_token_ms";
+        case MetricType::LlmTokensPerSec:       return "llm_tokens_per_sec";
+        case MetricType::TtsFirstChunkMs:       return "tts_first_chunk_ms";
+        case MetricType::TtsRtf:                return "tts_rtf";
+        case MetricType::TtsQueueMs:            return "tts_queue_ms";
+        case MetricType::ProcessRssMb:          return "process_rss_mb";
+        case MetricType::ProcessPeakMb:         return "process_peak_mb";
+        case MetricType::TtsThreadCount:        return "tts_thread_count";
+        case MetricType::LlmPromptTokens:       return "llm_prompt_tokens";
+        case MetricType::LlmGeneratedTokens:    return "llm_generated_tokens";
+        case MetricType::LlmPrefillMs:          return "llm_prefill_ms";
+        case MetricType::LlmDecodeMs:           return "llm_decode_ms";
+        case MetricType::LlmBackendSelectMs:    return "llm_backend_select_ms";
+        case MetricType::LlmBackendLoadMs:      return "llm_backend_load_ms";
+        case MetricType::LlmModelLoadMs:        return "llm_model_load_ms";
+        case MetricType::LlmContextInitMs:      return "llm_context_init_ms";
+        case MetricType::CpuDotprod:             return "cpu_dotprod";
+        case MetricType::CpuFp16:                return "cpu_fp16";
+        case MetricType::LlmBackendTier:         return "llm_backend_tier";
+        case MetricType::AsrOrphanPartialReset:  return "asr_orphan_partial_reset";
+        case MetricType::AsrFillerDiscard:       return "asr_filler_discard";
+        case MetricType::AsrDecoderReset:        return "asr_decoder_reset";
         default:                                return "unknown";
     }
 }

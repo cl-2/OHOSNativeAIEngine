@@ -1,15 +1,21 @@
-# ============================================================
-# OHOS Native AI Engine
-# ============================================================
-
-# --- Build outputs ---
+# Build outputs
 **/build/
-**/build/**/*
 out/
+.cxx/
+.hvigor/
+.hvigor-user/
+oh_modules/
+entry/oh_modules/
+*.hap
+*.hsp
+*.app
 
-# --- IDE / Editor ---
+# IDE and machine-local configuration
 .idea/
 .vscode/
+.local/
+local.properties
+CMakeUserPresets.json
 *.suo
 *.ntvs*
 *.njsproj
@@ -18,61 +24,71 @@ out/
 *~
 *.bak
 
-# --- OHOS / DevEco Studio ---
-.hvigor/
-oh_modules/
-entry/oh_modules/
-.local/
-local.properties
-*.hsp
-*.app
+# Personal assistant/tool state
+.claude/
+.reasonix/
+.test/
+.appanalyzer/
+.backup/
+CLAUDE.md
 
-# --- Model files (large, need separate download) ---
+# Local study and interview notes
+/docs/
+
+# Secrets and local signing material
+.env
+.env.*
+!.env.example
+.ohos/
+signing/
+*.p12
+*.p7b
+*.cer
+*.pem
+*.key
+build-profile.local.json5
+
+# Large models are downloaded or prepared outside Git
 /models/
-entry/src/main/resources/rawfile/models/
-entry/src/main/assets/models/
+entry/src/main/resources/rawfile/models/**
+entry/src/main/assets/models/**
 **/*.onnx
 **/*.tflite
 **/*.gguf
 
-# --- Native prebuilt libraries & versioned .so ---
+# Keep the tiny keyword configuration when present
+!entry/src/main/resources/rawfile/models/kws/
+!entry/src/main/resources/rawfile/models/kws/**
+
+# Native prebuilts and local dependencies
 entry/libs/
 entry/src/main/cpp/libs/
-**/*.so
-**/*.so.*
-
-# --- GitHub Actions CI (personal project, not needed for now) ---
-.github/
-
-# --- Docs (WIP, not publishing yet) ---
-docs/
-
-# --- Embedded sherpa-onnx git repo (keep c-api.h, use submodule if needed) ---
 entry/src/main/cpp/sherpa-onnx/
-
-# --- Windows prebuilt ---
+entry/src/main/cpp/third_party/llama.cpp.local-backup/
+/3rdparty/
 /sherpa-onnx-win/
-
-# --- VCPKG installed (vcpkg.json manifest is enough) ---
 /vcpkg/
 /vcpkg_installed/
+*.exe
+*.obj
+*.dll
+*.pdb
+*.lib
+*.a
+*.so
+*.so.*
 
-# --- CMake ---
-CMakeUserPresets.json
-.cxx
+# Local diagnostics and device-only helper scripts
+/performance/
+/scripts/build_rnnoise.bat
+/scripts/download_llm_model.bat
+/scripts/download_llm_model.py
+/scripts/run_voice_regression.ps1
+/scripts/test_tts_chunks.sh
+/scripts/verify_tts_flow.sh
 
-# --- LSP / clangd ---
-.clangd
-.clang-tidy
-.clang-format
-
-# --- OS metadata ---
-.DS_Store
-Thumbs.db
-
-# --- Runtime logs & temp files ---
+# Logs and temporary files
 *.log
-!oh-package-lock.json5
 crash_log.txt
 native_ai_log.txt
 stderr.txt
@@ -81,16 +97,6 @@ temp*.txt
 TtsWorker_handler.txt
 payload.json
 
-# --- Compiled binaries ---
-*.exe
-*.obj
-*.dll
-*.pdb
-*.lib
-*.a
-*.so
-
-# --- Test artifacts & analyzer ---
-.test/
-.appanalyzer/
-.backup/
+# OS metadata
+.DS_Store
+Thumbs.db

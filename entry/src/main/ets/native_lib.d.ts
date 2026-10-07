@@ -1,5 +1,6 @@
 
-type TtsCallback = (data: ArrayBuffer, progress: number, sampleRate: number) => void;
+type TtsCallback = (data: ArrayBuffer, progress: number, sampleRate: number, generation: number,
+  sampleCount?: number) => void;
 type AsrCallback = (text: string, isFinal: boolean) => void;
 
 // 性能监控回调
@@ -23,6 +24,29 @@ const enum MetricTypeId {
   RingBufferFillRate = 6,
   AudioChunkSize = 7,
   LlmLatencyMs = 8,
+  AudioPipelineTotalMs = 9,
+  DcFilterLatencyUs = 10,
+  NoiseSuppressLatencyUs = 11,
+  AecLatencyUs = 12,
+  LlmFirstTokenMs = 13,
+  LlmTokensPerSec = 14,
+  TtsFirstChunkMs = 15,
+  TtsRtf = 16,
+  TtsQueueMs = 17,
+  ProcessRssMb = 18,
+  ProcessPeakMb = 19,
+  TtsThreadCount = 20,
+  LlmPromptTokens = 21,
+  LlmGeneratedTokens = 22,
+  LlmPrefillMs = 23,
+  LlmDecodeMs = 24,
+  LlmBackendSelectMs = 25,
+  LlmBackendLoadMs = 26,
+  LlmModelLoadMs = 27,
+  LlmContextInitMs = 28,
+  CpuDotprod = 29,
+  CpuFp16 = 30,
+  LlmBackendTier = 31,
 }
 
 interface MetricPoint {
@@ -76,7 +100,12 @@ interface NativeLibModule {
   pingNative(): number;
   prewarmTts(modelDir: string): void;
   startStreamingTtsWithSpeed(text: string, modelDir: string, speed: number, callback: TtsCallback): void;
+  setTtsNumThreads(numThreads: number): number;
   stopTts(): void;
+  releaseTtsEngine(): boolean;
+  beginTtsLifecycleLease(): void;
+  endTtsLifecycleLease(): void;
+  ackTtsChunk(sampleCount: number, generation: number): void;
   // startAssistant - 启动ASR引擎
   // 参数: (asrModelDir, vadModelPath, kwsModelPath, asrCallback)
   startAssistant(asrModelDir: string, vadModelPath: string, kwsModelPath: string, asrCallback: AsrCallback): void;
@@ -86,8 +115,16 @@ interface NativeLibModule {
   stopAssistant(): void;
 
   // ========== 本地 LLM（Qwen2.5-0.5B + ONNX Runtime）==========
+  // 初始化本地 LLM 引擎（传入模型沙箱目录路径）
+  initLocalLlm(modelDir: string): boolean;
+  // 流式调用本地 LLM（需先调用 initLocalLlm）
   callLocalLlm(text: string, historyJson: string, onToken: (token: string) => void, onComplete: (text: string, success: boolean) => void): void;
-  isLocalLlmAvailable(): boolean;
+  setLocalLlmDiagnosticTokens(tokens: number): number;
+  // 检查本地 LLM 模型文件是否已就绪
+  isLocalLlmAvailable(modelDir?: string): boolean;
+  releaseLocalLlm(): void;
+  getRuntimeMemorySnapshot(): string;
+  runVoiceLogicRegression(): string;
 
   // ========== 硬件加速接口 (MediaCodec HAL) ==========
   // 创建硬件编解码器实例
@@ -107,7 +144,7 @@ interface NativeLibModule {
   runCodecBenchmark(mimeType: string, testDurationMs?: number): CodecBenchmarkResult;
 
   // ========== 全双工音频状态机 ==========
-  // 启动全双工模式 (开始打断检测)
+  // 启动全双工模式
   startFullDuplex(): void;
   // 停止全双工模式
   stopFullDuplex(): void;

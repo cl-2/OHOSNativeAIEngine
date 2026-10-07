@@ -54,6 +54,7 @@ if(PLATFORM STREQUAL "OHOS")
     # --- HarmonyOS 构建 (native_lib.so) ---
     add_library(native_lib SHARED
         entry/src/main/cpp/napi_init.cpp
+        entry/src/main/cpp/RingBuffer.h
         entry/src/main/cpp/hardware/MediaCodecAdapter.h
         entry/src/main/cpp/hardware/MediaCodecAdapter.cpp
         entry/src/main/cpp/hardware/MediaCodecAdapter_napi.h
@@ -64,6 +65,23 @@ if(PLATFORM STREQUAL "OHOS")
         entry/src/main/cpp/tts/SupertonicTtsEngine.cpp
         entry/src/main/cpp/audio/AudioStateMachine.h
         entry/src/main/cpp/audio/AudioStateMachine.cpp
+        entry/src/main/cpp/audio/Aec.h
+        entry/src/main/cpp/audio/Aec.cpp
+        entry/src/main/cpp/audio/NoiseSuppressor.h
+        entry/src/main/cpp/audio/NoiseSuppressor.cpp
+        entry/src/main/cpp/audio/PipelineTypes.h
+        entry/src/main/cpp/metrics/MetricsCollector.h
+        entry/src/main/cpp/metrics/MetricsCollector.cpp
+        entry/src/main/cpp/metrics/MetricsData.h
+        entry/src/main/cpp/metrics/BenchmarkEngine.h
+        entry/src/main/cpp/metrics/BenchmarkEngine.cpp
+        entry/src/main/cpp/llm/LlmEngine.h
+        entry/src/main/cpp/llm/LocalLlmEngine.h
+        entry/src/main/cpp/llm/LocalLlmEngine.cpp
+        entry/src/main/cpp/llm/RemoteLlmEngine.h
+        entry/src/main/cpp/llm/RemoteLlmEngine.cpp
+        entry/src/main/cpp/llm/BpeTokenizer.h
+        entry/src/main/cpp/llm/BpeTokenizer.cpp
     )
 
     target_include_directories(native_lib PUBLIC

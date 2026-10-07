@@ -5,10 +5,17 @@ REM 使用 DevEco Studio 的 OHOS Native SDK 构建 native_lib.so
 REM ============================================================
 setlocal enabledelayedexpansion
 
-REM 设置 OHOS SDK 路径 (根据实际安装路径修改)
+REM Prefer an explicit native SDK path; otherwise derive it from DevEco Studio.
+if "%OHOS_NATIVE_SDK%"=="" if not "%DEVECO_SDK_HOME%"=="" (
+    set "OHOS_NATIVE_SDK=%DEVECO_SDK_HOME%\default\hms\native"
+)
 if "%OHOS_NATIVE_SDK%"=="" (
-    set "OHOS_NATIVE_SDK=D:\deveco\DevEco Studio\sdk\default\hms\native"
-    echo [INFO] OHOS_NATIVE_SDK not set, using default: !OHOS_NATIVE_SDK!
+    echo [ERROR] Set OHOS_NATIVE_SDK or DEVECO_SDK_HOME before building.
+    exit /b 1
+)
+if not exist "%OHOS_NATIVE_SDK%\build\cmake" (
+    echo [ERROR] Invalid OHOS_NATIVE_SDK: %OHOS_NATIVE_SDK%
+    exit /b 1
 )
 
 REM 设置目标架构

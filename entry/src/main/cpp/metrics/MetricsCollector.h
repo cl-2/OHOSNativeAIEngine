@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <functional>
+#include <atomic>
 
 class MetricsCollector {
 public:
@@ -42,11 +43,22 @@ public:
 
     // --- 便捷埋点方法 ---
     static void RecordAsrRtf(double rtf);
-    static void RecordAsrDecodeLatency(int64_t ms);
-    static void RecordVadLatency(int64_t ms);
+    static void RecordAsrDecodeLatency(double ms);
+    static void RecordVadLatency(double ms);
     static void RecordTtsGeneration(int64_t ms);
     static void RecordRingBufferFillRate(double rate);
     static void RecordLlmLatency(int64_t ms);
+    static void RecordAudioPipelineTotal(double ms);
+    static void RecordDcFilterLatency(double us);
+    static void RecordNoiseSuppressLatency(double us);
+    static void RecordAecLatency(double us);
+    static void RecordLlmFirstToken(double ms);
+    static void RecordLlmTokensPerSec(double tokensPerSec);
+    static void RecordTtsFirstChunk(double ms);
+    static void RecordTtsRtf(double rtf);
+    static void RecordTtsQueueMs(double ms);
+    static void RecordProcessMemory(double rssMb, double peakMb);
+    static void RecordProcessMemorySnapshot();
 
     // ======================== 查询接口 ========================
 
@@ -98,8 +110,8 @@ private:
     static std::string m_storagePath;
     static std::mutex m_mutex;
     static std::unordered_map<uint8_t, std::deque<MetricPoint>> m_series;
-    static bool m_enabled;
-    static int64_t m_lastSaveTime;
+    static std::atomic<bool> m_enabled;
+    static std::atomic<int64_t> m_lastSaveTime;
     static MetricCallback m_callback;
 
     // 内部：检查是否需要自动持久化

@@ -10,13 +10,18 @@ let isStopping: boolean = false;
 let ttsBufferSize: number = 0;
 let rendererReady: boolean = false;
 let pendingBuffer: ArrayBuffer[] | null = null;
+let pendingNativeGeneration: number = 0;
 let pendingDone: boolean = false;
+let completionDrainRunning: boolean = false;
 let writeCount: number = 0;
 let ttsSampleRate: number = 0;
 let totalChunkBytes: number = 0;
 let isFirstPlay: boolean = true; // 首帧播放标记，用于淡入
 let ttsPendingCount: number = 0;  // 待处理的 TTS 句数
 let ttsCompletedCount: number = 0; // 已完成的 TTS 句数
+let ttsGenerationId: number = 0;   // stopTts 时 +1，旧轮次回调自动丢弃
+let activeGenerationResolve: Function | null = null;
+let cleanupPromise: Promise<void> | null = null;
 
 // 生成队列：保证多句串行生成（一条 async 协程逐个 await）
 interface TtsTask {
@@ -30,17 +35,94 @@ let generationQueueRunning: boolean = false;
 // 自适应缓冲参数
 const MIN_START_MS: number = 200;    // 起播最小缓冲 (ms)
 const MAX_BUF_MS: number = 5000;     // 最大缓冲 (ms)，超了丢弃旧包
+const TTS_PCM_GAIN: number = 2.0;     // 对整轮 PCM 使用统一的 2 倍增益
 
 // 写队列：保证串行写入，防电流音
-const writeQueue: ArrayBuffer[] = [];
+interface PcmQueueItem {
+  data: ArrayBuffer;
+  nativeGeneration: number;
+}
+const writeQueue: PcmQueueItem[] = [];
 let writeQueueRunning: boolean = false;
+let writeQueueBytes: number = 0;
+const GENERATION_HIGH_WATER_MS: number = 2500;
+
+// Offline VITS only calls back after a whole natural sentence is inferred.  A
+// small phrase pipeline therefore lets the first phrase start immediately,
+// while the next phrase is generated during playback of the previous one.
+const TTS_PIPELINE_CHARS: number = 14;
+
+function splitForSpeechPipeline(text: string): string[] {
+  const source: string = text.trim();
+  if (source.length <= TTS_PIPELINE_CHARS) return source.length > 0 ? [source] : [];
+
+  const result: string[] = [];
+  let begin: number = 0;
+  let preferredEnd: number = -1;
+  for (let index: number = 0; index < source.length; index++) {
+    const ch: string = source.charAt(index);
+    const length: number = index - begin + 1;
+    if (ch === '，' || ch === '、' || ch === ',' || ch === '。' || ch === '！' ||
+        ch === '？' || ch === '；' || ch === '!' || ch === '?' || ch === ';' || ch === '\n') {
+      preferredEnd = index + 1;
+    }
+    if (length < TTS_PIPELINE_CHARS) continue;
+    // Ignore very early commas: their short audio cannot cover the following
+    // inference, which was the source of the obvious comma-by-comma pauses.
+    let end: number = preferredEnd > begin + 7 ? preferredEnd : index + 1;
+    // Do not split an embedded Latin word such as "man" in the middle. This
+    // only permits a longer phrase for that word; ordinary Chinese text still
+    // keeps the short first-phrase target.
+    while (end < source.length && end < begin + TTS_PIPELINE_CHARS + 12) {
+      const next: string = source.charAt(end);
+      const previous: string = source.charAt(end - 1);
+      const nextIsWord: boolean = (next >= 'a' && next <= 'z') ||
+        (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9');
+      const previousIsWord: boolean = (previous >= 'a' && previous <= 'z') ||
+        (previous >= 'A' && previous <= 'Z') || (previous >= '0' && previous <= '9');
+      if (nextIsWord && previousIsWord) {
+        end++;
+        continue;
+      }
+      if ((next === '，' || next === ',' || next === '。' || next === '！' || next === '？') &&
+          previousIsWord) end++;
+      break;
+    }
+    const part: string = source.substring(begin, end).trim();
+    if (part.length > 0) result.push(part);
+    begin = end;
+    index = end - 1;
+    preferredEnd = -1;
+  }
+  const tail: string = source.substring(begin).trim();
+  if (tail.length > 0) result.push(tail);
+  return result;
+}
+
+function getWriteQueueMs(): number {
+  if (ttsSampleRate <= 0) return 0;
+  return writeQueueBytes * 1000 / (ttsSampleRate * 2);
+}
+
+async function waitForPlaybackCapacity(generation: number): Promise<void> {
+  while (!isStopping && generation === ttsGenerationId &&
+         getWriteQueueMs() > GENERATION_HIGH_WATER_MS) {
+    nativeLib.recordMetric(17, getWriteQueueMs());
+    await new Promise<void>((resolve: Function): void => {
+      setTimeout((): void => resolve(), 25);
+    });
+  }
+}
 
 async function processWriteQueue(): Promise<void> {
   if (writeQueueRunning) return;
   writeQueueRunning = true;
   while (writeQueue.length > 0 && !isStopping) {
-    const data: ArrayBuffer = writeQueue.shift()!;
-    await doWriteInternal(data);
+    const item: PcmQueueItem = writeQueue.shift()!;
+    await doWriteInternal(item.data);
+    nativeLib.ackTtsChunk(item.data.byteLength / 2, item.nativeGeneration);
+    writeQueueBytes = Math.max(0, writeQueueBytes - item.data.byteLength);
+    nativeLib.recordMetric(17, getWriteQueueMs());
     writeCount--;
   }
   writeQueueRunning = false;
@@ -60,6 +142,11 @@ async function doWriteInternal(data: ArrayBuffer): Promise<void> {
     const chunkSize: number = remaining < ttsBufferSize ? remaining : ttsBufferSize;
     const chunk: ArrayBuffer = data.slice(offset, offset + chunkSize);
     try {
+      const pcm: Int16Array = new Int16Array(chunk);
+      for (let i = 0; i < pcm.length; i++) {
+        const amplified: number = Math.round(pcm[i] * TTS_PCM_GAIN);
+        pcm[i] = Math.max(-32768, Math.min(32767, amplified));
+      }
       await audioRenderer.write(chunk);
     } catch (_e) {
       console.error('OHOS_ai_TTS_WRITE_ERR: ' + String(_e));
@@ -68,9 +155,11 @@ async function doWriteInternal(data: ArrayBuffer): Promise<void> {
   }
 }
 
-function doWrite(data: ArrayBuffer): void {
+function doWrite(data: ArrayBuffer, nativeGeneration: number): void {
   writeCount++;
-  writeQueue.push(data);
+  writeQueueBytes += data.byteLength;
+  writeQueue.push({ data, nativeGeneration });
+  nativeLib.recordMetric(17, getWriteQueueMs());
   processWriteQueue();
 }
 
@@ -106,40 +195,19 @@ function tryFlush(): void {
   totalChunkBytes = 0;
   console.info('OHOS_ai_TTS_FLUSH: chunks=' + buf.length + ' bytes=' + savedBytes + ' minStart=' + getMinStartBytes() + ' done=' + pendingDone);
 
-  // 合并 + 峰值归一化 + 淡入
+  // 合并后保持模型原始电平。不能只归一化首批缓存，否则后续流式块
+  // 回到原始电平时会产生明显的音量断层。
   let totalBytes: number = 0;
   for (let i = 0; i < buf.length; i++) totalBytes += buf[i].byteLength;
   const merged: ArrayBuffer = new ArrayBuffer(totalBytes);
   const mergedView: Int16Array = new Int16Array(merged);
   let off: number = 0;
-  let peak: number = 0;
   for (let i = 0; i < buf.length; i++) {
     const src: Int16Array = new Int16Array(buf[i]);
     for (let j = 0; j < src.length; j++) {
       mergedView[off + j] = src[j];
-      const abs: number = Math.abs(src[j]);
-      if (abs > peak) peak = abs;
     }
     off += src.length;
-  }
-  // RMS 归一化（一致性音量，避免句子间忽大忽小）
-  // 用全局 TARGET_RMS 替代逐句峰值归一化
-  if (peak > 0) {
-    // 计算当前 RMS
-    let sumSq: number = 0;
-    for (let i = 0; i < mergedView.length; i++) {
-      sumSq += mergedView[i] * mergedView[i];
-    }
-    const rms: number = Math.sqrt(sumSq / mergedView.length);
-    if (rms > 0) {
-      const gain: number = TARGET_RMS * 32768 / rms;
-      if (gain > 0.5 && gain < 5.0) {  // 限制增益范围，防止极端放大/缩小
-        for (let i = 0; i < mergedView.length; i++) {
-          let v: number = Math.round(mergedView[i] * gain);
-          mergedView[i] = Math.max(-32768, Math.min(32767, v));
-        }
-      }
-    }
   }
   // 首帧淡入（10ms 线性斜坡，防爆音）
   if (isFirstPlay) {
@@ -150,12 +218,9 @@ function tryFlush(): void {
     }
   }
   // 入队列播放
-  doWrite(merged);
+  doWrite(merged, pendingNativeGeneration);
   if (pendingDone) checkAllDone();
 }
-
-// 全局 RMS 目标电平（0.3 = -10dB，consistent across sentences）
-const TARGET_RMS: number = 0.3;
 
 // 检查所有 TTS 是否全部完成
 function checkAllDone(): void {
@@ -163,14 +228,31 @@ function checkAllDone(): void {
     pendingDone = true;
     // 等待写队列清空（确保所有音频已提交给 AudioRenderer）
     if (writeCount > 0 || writeQueueRunning) return;
-    console.info('OHOS_ai_TTS: all ' + ttsPendingCount + ' sentences done');
-    // 不清理 AudioRenderer — 让它自然播完缓冲
-    // 计数器在下一批 startTts 到达时会自动重置
-    pendingDone = false;
-    ttsPendingCount = 0;
-    ttsCompletedCount = 0;
-    workerPort.postMessage({ msgType: 'stopped' });
+    if (!completionDrainRunning) finishNaturalPlayback();
   }
+}
+
+async function finishNaturalPlayback(): Promise<void> {
+  completionDrainRunning = true;
+  const generationSnapshot: number = ttsGenerationId;
+  try {
+    if (audioRenderer) await audioRenderer.drain();
+  } catch (err) {
+    console.warn('OHOS_ai_TTS: renderer drain failed: ' + String(err));
+  }
+  completionDrainRunning = false;
+  if (generationSnapshot !== ttsGenerationId || isStopping) return;
+  if (writeCount > 0 || writeQueueRunning || generationQueue.length > 0 ||
+      ttsCompletedCount < ttsPendingCount) {
+    checkAllDone();
+    return;
+  }
+  console.info('OHOS_ai_TTS: all ' + ttsPendingCount + ' sentences played');
+  pendingDone = false;
+  isPlaying = false;
+  ttsPendingCount = 0;
+  ttsCompletedCount = 0;
+  workerPort.postMessage({ msgType: 'stopped', reason: 'completed' });
 }
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
@@ -179,14 +261,23 @@ workerPort.onmessage = async (e: MessageEvents) => {
   const msgType: string = e.data['msgType'] as string;
 
   if (msgType === 'startTts') {
+    if (cleanupPromise) await cleanupPromise;
     const text: string = e.data['text'] as string;
     const modelDir: string = e.data['modelDir'] as string;
     const speed: number = e.data['speed'] as number;
     console.info('OHOS_ai_TTS: startTts textLen=' + text.length + ' pending=' + ttsPendingCount);
 
-    ttsPendingCount++;
+    const tasks: string[] = splitForSpeechPipeline(text);
+    if (tasks.length === 0) {
+      workerPort.postMessage({ msgType: 'stopped', reason: 'completed' });
+      return;
+    }
+    ttsPendingCount += tasks.length;
     isStopping = false;
-    generationQueue.push({ text, modelDir, speed });
+    for (let index: number = 0; index < tasks.length; index++) {
+      generationQueue.push({ text: tasks[index], modelDir, speed });
+    }
+    console.info('OHOS_ai_TTS: pipeline segments=' + tasks.length + ' pending=' + ttsPendingCount);
     // 启动/继续队列处理（如果已在运行，push 后 while 循环会取到新任务）
     processGenerationQueue();
     return;
@@ -195,15 +286,42 @@ workerPort.onmessage = async (e: MessageEvents) => {
   if (msgType === 'stopTts') {
     console.info('OHOS_ai_TTS: stopTts');
     isStopping = true; isPlaying = false;
+    ttsGenerationId++;  // 使旧轮次的回调失效
     nativeLib.stopTts();
+    if (activeGenerationResolve) {
+      activeGenerationResolve();
+      activeGenerationResolve = null;
+    }
     // 清空生成队列
     generationQueue.length = 0;
     generationQueueRunning = false;
-    doCleanup();
+    const currentCleanup: Promise<void> = doCleanup();
+    cleanupPromise = currentCleanup;
+    await currentCleanup;
+    if (cleanupPromise === currentCleanup) cleanupPromise = null;
+    completionDrainRunning = false;
     ttsPendingCount = 0;
     ttsCompletedCount = 0;
-    workerPort.postMessage({ msgType: 'stopped' });
+    workerPort.postMessage({ msgType: 'stopped', reason: 'interrupted' });
   }
+  if (msgType === 'releaseTtsRenderer') {
+    // The renderer owns buffers outside the native model. Releasing it only
+    // after natural completion/stop avoids the historical silent second turn.
+    if (!isPlaying && !generationQueueRunning && !completionDrainRunning &&
+        writeQueue.length === 0 && !writeQueueRunning) {
+      const currentCleanup: Promise<void> = doCleanup();
+      cleanupPromise = currentCleanup;
+      await currentCleanup;
+      if (cleanupPromise === currentCleanup) cleanupPromise = null;
+      console.info('OHOS_ai_TTS: idle renderer released');
+      workerPort.postMessage({ msgType: 'rendererReleased' });
+    }
+    return;
+  }
+  // Candidate VAD must not rewrite queued PCM gain. A confirmed barge-in stops
+  // the renderer directly; a rejected candidate leaves playback untouched.
+  if (msgType === 'duckTts') return;
+  if (msgType === 'resumeTts') return;
   if (msgType === 'pauseTts') {
     if (audioRenderer) { try { audioRenderer.pause(); } catch (_e) {} }
   }
@@ -215,13 +333,18 @@ workerPort.onmessage = async (e: MessageEvents) => {
 // 生成队列处理：逐个 await 生成，保证多句顺序
 async function processGenerationQueue(): Promise<void> {
   if (generationQueueRunning) return;
+  const loopGeneration: number = ttsGenerationId;
   generationQueueRunning = true;
 
-  while (generationQueue.length > 0 && !isStopping) {
+  while (generationQueue.length > 0 && !isStopping && loopGeneration === ttsGenerationId) {
+    // 当生成速度明显快于播放速度时，在句子边界等待，避免 PCM 队列无限增长。
+    await waitForPlaybackCapacity(loopGeneration);
+    if (isStopping || loopGeneration !== ttsGenerationId) break;
     const task: TtsTask = generationQueue.shift()!;
     await generateOneSentence(task.text, task.modelDir, task.speed);
   }
 
+  if (loopGeneration !== ttsGenerationId) return;
   generationQueueRunning = false;
   // 队列清空后检查是否全部完成（可能在 generateOneSentence 中已触发，再确认一次）
   checkAllDone();
@@ -233,6 +356,7 @@ async function generateOneSentence(text: string, modelDir: string, speed: number
     isPlaying = true;
     writeCount = 0;
     writeQueue.length = 0;
+    writeQueueBytes = 0;
     writeQueueRunning = false;
     if (audioRenderer) {
       try { await audioRenderer.stop(); } catch (_e) {}
@@ -244,21 +368,28 @@ async function generateOneSentence(text: string, modelDir: string, speed: number
     isFirstPlay = true;
   }
 
+  // 保存 generation 快照，回调中丢弃旧轮次
+  const genSnapshot: number = ttsGenerationId;
+
   return new Promise<void>((resolve: Function) => {
+    activeGenerationResolve = resolve;
     try {
       console.info('OHOS_ai_TTS: generate textLen=' + text.length);
 
       nativeLib.startStreamingTtsWithSpeed(text, modelDir, speed,
-        (data: ArrayBuffer, progress: number, sr: number): void => {
+        (data: ArrayBuffer, progress: number, sr: number, nativeGeneration: number): void => {
+          if (genSnapshot !== ttsGenerationId) return;  // 旧轮次，丢弃
           const chunkTime: number = Date.now();
           if (progress >= 2.0) {
             console.info('OHOS_ai_TTS: sentence done ' + (ttsCompletedCount + 1) + '/' + ttsPendingCount);
             ttsCompletedCount++;
             checkAllDone();
+            activeGenerationResolve = null;
             resolve();
             return;
           }
           if (!data || data.byteLength === 0) return;
+          pendingNativeGeneration = nativeGeneration;
           if (ttsSampleRate === 0) {
             ttsSampleRate = sr;
             doCreateRenderer(sr);
@@ -273,27 +404,46 @@ async function generateOneSentence(text: string, modelDir: string, speed: number
             totalChunkBytes += data.byteLength;
             tryFlush();
           } else {
-            doWrite(data);
+            doWrite(data, nativeGeneration);
           }
         });
     } catch (err) {
       console.error('OHOS_ai_TTS: error=' + String((err as Error).message || err));
       ttsCompletedCount++;
       checkAllDone();
+      activeGenerationResolve = null;
       resolve();
     }
   });
 }
 
-function doCleanup(): void {
-  if (audioRenderer) { try { audioRenderer.stop(); audioRenderer.release(); } catch (_e) {} audioRenderer = null; }
+async function doCleanup(): Promise<void> {
+  if (audioRenderer) {
+    try { await audioRenderer.stop(); } catch (_e) {}
+    try { await audioRenderer.release(); } catch (_e) {}
+    audioRenderer = null;
+  }
   rendererReady = false; pendingBuffer = null; pendingDone = false;
-  writeCount = 0; writeQueue.length = 0; writeQueueRunning = false;
-  ttsSampleRate = 0; totalChunkBytes = 0;
+  writeCount = 0; writeQueue.length = 0; writeQueueRunning = false; writeQueueBytes = 0;
+  ttsSampleRate = 0; totalChunkBytes = 0; pendingNativeGeneration = 0;
 }
 
 async function doCreateRenderer(sampleRate: number): Promise<void> {
   try {
+    // VOICE_COMMUNICATION can default to the earpiece/call route on phones.
+    // Keep the communication stream for platform AEC, but explicitly route
+    // this application's communication output to the loudspeaker.
+    try {
+      const audioManager: audio.AudioManager = audio.getAudioManager();
+      const routingManager: audio.AudioRoutingManager = audioManager.getRoutingManager();
+      await routingManager.setCommunicationDevice(audio.CommunicationDeviceType.SPEAKER, true);
+      const speakerActive: boolean =
+        routingManager.isCommunicationDeviceActiveSync(audio.CommunicationDeviceType.SPEAKER);
+      console.info('OHOS_ai_TTS_ROUTE: speaker active=' + speakerActive);
+    } catch (routeErr) {
+      console.warn('OHOS_ai_TTS_ROUTE: force speaker failed: ' + String(routeErr));
+    }
+
     const audioStreamInfo: audio.AudioStreamInfo = {
       samplingRate: getAudioSamplingRate(sampleRate),
       channels: audio.AudioChannel.CHANNEL_1,
@@ -302,9 +452,14 @@ async function doCreateRenderer(sampleRate: number): Promise<void> {
     };
     const opts: audio.AudioRendererOptions = {
       streamInfo: audioStreamInfo,
-      rendererInfo: { content: audio.ContentType.CONTENT_TYPE_SPEECH, usage: audio.StreamUsage.STREAM_USAGE_MEDIA, rendererFlags: 0 }
+      rendererInfo: {
+        content: audio.ContentType.CONTENT_TYPE_SPEECH,
+        usage: audio.StreamUsage.STREAM_USAGE_VOICE_COMMUNICATION,
+        rendererFlags: 0
+      }
     };
     audioRenderer = await audio.createAudioRenderer(opts);
+    await audioRenderer.setVolume(1.0);
     await audioRenderer.start();
     ttsBufferSize = await audioRenderer.getBufferSize();
     rendererReady = true;

@@ -7,8 +7,12 @@
  */
 
 import { fileIo } from '@kit.CoreFileKit';
-import { CryptoManager } from './CryptoManager';
 import { EncryptedStore } from './EncryptedStore';
+import {
+  extractStructuredMemory,
+  MemoryFieldUpdate,
+  StructuredMemoryExtraction
+} from './MemoryExtractor';
 
 // ===== 数据结构 =====
 
@@ -32,6 +36,27 @@ interface SessionState {
   turnCount: number;
   /** 当前对话的意图摘要 */
   intentSummary: string;
+}
+
+export interface MemoryPreferenceItem {
+  key: string;
+  value: string;
+}
+
+export interface UserMemorySnapshot {
+  preferences: MemoryPreferenceItem[];
+  facts: string[];
+  topics: string[];
+  updatedAt: string;
+  conversationCount: number;
+}
+
+type MemoryMutationKind = 'add_fact' | 'set_preference' | 'add_topic' | 'increment' | 'reset';
+
+interface PendingMemoryMutation {
+  kind: MemoryMutationKind;
+  key: string;
+  value: string;
 }
 
 // ===== 常量 =====
@@ -60,20 +85,25 @@ export class MemoryManager {
   private static _profile: UserProfile | null = null;
   private static _storagePath: string = '';
   private static _initialized: boolean = false;
+  private static _profileReady: boolean = false;
+  private static _readyPromise: Promise<void> = Promise.resolve();
+  private static _pendingMutations: PendingMemoryMutation[] = [];
+  private static _saveQueue: Promise<void> = Promise.resolve();
   private static _sessions: Map<string, SessionState> = new Map();
   private static _cleanupTimer: number = -1;
 
   /**
    * 初始化（由 Index.ets 在 aboutToAppear 中调用）
    */
-  static init(filesDir: string): void {
-    if (this._initialized) return;
+  static init(filesDir: string): Promise<void> {
+    if (this._initialized) return this._readyPromise;
     this._storagePath = filesDir + '/memory';
     try { fileIo.mkdirSync(this._storagePath, true); } catch (_e) {}
-    this._profile = this._loadProfile();
+    this._profile = defaultProfile();
     this._startCleanupTimer();
     this._initialized = true;
-    console.info('OHOS_Memory: MemoryManager initialized');
+    this._readyPromise = this._initializeProfile();
+    return this._readyPromise;
   }
 
   // ======================== Session 管理 ========================
@@ -147,6 +177,7 @@ export class MemoryManager {
    * 获取 System Prompt 中要注入的记忆文本
    */
   static getMemoryPrompt(): string {
+    if (!this._profileReady) return '';
     const p: UserProfile = this.getProfile();
     const parts: string[] = [];
 
@@ -183,103 +214,222 @@ export class MemoryManager {
    * 添加一条事实
    */
   static addFact(fact: string): void {
-    const p: UserProfile = this.getProfile();
-    // 去重：不添加完全相同的事实
-    for (let i: number = 0; i < p.facts.length; i++) {
-      if (p.facts[i] === fact) return;
-    }
-    p.facts.push(fact);
-    if (p.facts.length > MAX_FACTS) {
-      p.facts = p.facts.slice(-MAX_FACTS);
-    }
-    p.updatedAt = new Date().toISOString();
-    this._saveProfile();
-    console.info('OHOS_Memory: added fact: ' + fact);
+    this._mutate({ kind: 'add_fact', key: '', value: fact });
   }
 
   /**
    * 设置偏好
    */
   static setPreference(key: string, value: string): void {
-    const p: UserProfile = this.getProfile();
-    p.preferences[key] = value;
-    p.updatedAt = new Date().toISOString();
-    this._saveProfile();
-    console.info('OHOS_Memory: set preference: ' + key + '=' + value);
+    this._mutate({ kind: 'set_preference', key, value });
   }
 
   /**
    * 添加话题
    */
   static addTopic(topic: string): void {
-    const p: UserProfile = this.getProfile();
-    for (let i: number = 0; i < p.topics.length; i++) {
-      if (p.topics[i] === topic) return;
-    }
-    p.topics.push(topic);
-    if (p.topics.length > MAX_TOPICS) {
-      p.topics = p.topics.slice(-MAX_TOPICS);
-    }
-    p.updatedAt = new Date().toISOString();
-    this._saveProfile();
+    this._mutate({ kind: 'add_topic', key: '', value: topic });
   }
 
   /**
    * 增加对话计数
    */
   static incrementConversationCount(): void {
-    const p: UserProfile = this.getProfile();
-    p.conversationCount++;
-    p.updatedAt = new Date().toISOString();
-    this._saveProfile();
+    this._mutate({ kind: 'increment', key: '', value: '' });
   }
 
   /**
    * 重置所有记忆
    */
   static resetAll(): void {
-    this._profile = defaultProfile();
     this._sessions.clear();
-    this._saveProfile();
-    console.info('OHOS_Memory: reset all memories');
+    this._mutate({ kind: 'reset', key: '', value: '' });
+  }
+
+  /** Returns a detached snapshot suitable for UI display. */
+  static async getUserMemorySnapshot(): Promise<UserMemorySnapshot> {
+    await this._readyPromise;
+    const p: UserProfile = this.getProfile();
+    const preferences: MemoryPreferenceItem[] = [];
+    const keys: string[] = Object.keys(p.preferences);
+    for (let i: number = 0; i < keys.length; i++) {
+      preferences.push({ key: keys[i], value: p.preferences[keys[i]] });
+    }
+    return {
+      preferences,
+      facts: p.facts.slice(),
+      topics: p.topics.slice(),
+      updatedAt: p.updatedAt,
+      conversationCount: p.conversationCount
+    };
+  }
+
+  static async deleteFact(fact: string): Promise<boolean> {
+    await this._readyPromise;
+    const p: UserProfile = this.getProfile();
+    const index: number = p.facts.indexOf(fact);
+    if (index < 0) return false;
+    p.facts.splice(index, 1);
+    p.updatedAt = new Date().toISOString();
+    await this._saveProfile();
+    console.info('OHOS_Memory: fact deleted, count=' + p.facts.length);
+    return true;
+  }
+
+  static async deletePreference(key: string): Promise<boolean> {
+    await this._readyPromise;
+    const p: UserProfile = this.getProfile();
+    if (!Object.prototype.hasOwnProperty.call(p.preferences, key)) return false;
+    delete p.preferences[key];
+    p.updatedAt = new Date().toISOString();
+    await this._saveProfile();
+    console.info('OHOS_Memory: preference deleted, count=' + Object.keys(p.preferences).length);
+    return true;
+  }
+
+  static async deleteTopic(topic: string): Promise<boolean> {
+    await this._readyPromise;
+    const p: UserProfile = this.getProfile();
+    const index: number = p.topics.indexOf(topic);
+    if (index < 0) return false;
+    p.topics.splice(index, 1);
+    p.updatedAt = new Date().toISOString();
+    await this._saveProfile();
+    console.info('OHOS_Memory: topic deleted, count=' + p.topics.length);
+    return true;
+  }
+
+  static async clearUserMemory(): Promise<void> {
+    await this._readyPromise;
+    this._sessions.clear();
+    this._profile = defaultProfile();
+    await this._saveProfile();
+    console.info('OHOS_Memory: user memory cleared');
   }
 
   // ======================== 内部方法 ========================
 
-  private static _profilePath(): string {
+  private static _plainProfilePath(): string {
     return this._storagePath + '/profile.json';
   }
 
-  private static _loadProfile(): UserProfile {
+  private static _encryptedProfilePath(): string {
+    return this._storagePath + '/profile.json.enc';
+  }
+
+  private static async _initializeProfile(): Promise<void> {
+    let encrypted: UserProfile | null = null;
+    let plain: UserProfile | null = null;
     try {
-      const content: string = fileIo.readTextSync(this._profilePath());
-      const data: Record<string, Object> = JSON.parse(content) as Record<string, Object>;
-      // 兼容旧格式，确保字段都存在
-      return {
-        preferences: (data['preferences'] as Record<string, string>) || {},
-        facts: (data['facts'] as string[]) || [],
-        topics: (data['topics'] as string[]) || [],
-        updatedAt: (data['updatedAt'] as string) || new Date().toISOString(),
-        conversationCount: (data['conversationCount'] as number) || 0,
-      };
-    } catch (_e) {
-      return defaultProfile();
+      const stored: UserProfile | null = await EncryptedStore.read<UserProfile>(this._encryptedProfilePath());
+      if (stored) encrypted = this._normalizeProfile(stored);
+    } catch (e) {
+      console.error('OHOS_Memory: encrypted profile read failed=' + String(e));
+    }
+    try {
+      const content: string = fileIo.readTextSync(this._plainProfilePath());
+      plain = this._normalizeProfile(JSON.parse(content) as UserProfile);
+    } catch (_) {}
+
+    if (encrypted && plain) {
+      const encryptedTime: number = Date.parse(encrypted.updatedAt) || 0;
+      const plainTime: number = Date.parse(plain.updatedAt) || 0;
+      this._profile = plainTime > encryptedTime ? plain : encrypted;
+    } else {
+      this._profile = encrypted || plain || defaultProfile();
+    }
+
+    this._profileReady = true;
+    if (this._pendingMutations.length > 0) {
+      const pending: PendingMemoryMutation[] = this._pendingMutations.slice();
+      this._pendingMutations = [];
+      for (let i: number = 0; i < pending.length; i++) this._applyMutation(pending[i]);
+    }
+
+    try {
+      await this._writeProfileSnapshot();
+      try { fileIo.unlinkSync(this._plainProfilePath()); } catch (_) {}
+      console.info('OHOS_Memory: encrypted profile ready facts=' + this.getProfile().facts.length +
+        ' topics=' + this.getProfile().topics.length + ' conversations=' + this.getProfile().conversationCount);
+    } catch (e) {
+      console.error('OHOS_Memory: encrypted profile migration failed, plaintext kept=' + String(e));
     }
   }
 
-  private static _saveProfile(): void {
+  private static _saveProfile(): Promise<void> {
+    if (!this._profile || !this._profileReady) return Promise.resolve();
+    const snapshot: UserProfile = this._cloneProfile(this._profile);
+    const operation: Promise<void> = this._saveQueue.then((): Promise<void> =>
+      EncryptedStore.write(this._encryptedProfilePath(), snapshot)
+    );
+    this._saveQueue = operation.catch((e: Error): void => {
+      console.error('OHOS_Memory: encrypted profile save failed=' + String(e));
+    });
+    return operation;
+  }
+
+  private static async _writeProfileSnapshot(): Promise<void> {
     if (!this._profile) return;
-    try {
-      const json: string = JSON.stringify(this._profile, null, 2);
-      const path: string = this._profilePath();
-      const file = fileIo.openSync(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY);
-      fileIo.writeSync(file.fd, json);
-      fileIo.closeSync(file);
-      // 异步加密备份
-      EncryptedStore.write(path + '.enc', this._profile);
-    } catch (e) {
-      console.error('OHOS_Memory: save profile failed: ' + String(e));
+    await this._saveQueue;
+    await EncryptedStore.write(this._encryptedProfilePath(), this._cloneProfile(this._profile));
+  }
+
+  private static _mutate(mutation: PendingMemoryMutation): void {
+    if (!this._profileReady) {
+      this._pendingMutations.push(mutation);
+      return;
     }
+    if (this._applyMutation(mutation)) this._saveProfile();
+  }
+
+  private static _applyMutation(mutation: PendingMemoryMutation): boolean {
+    if (mutation.kind === 'reset') {
+      this._profile = defaultProfile();
+      console.info('OHOS_Memory: reset all memories');
+      return true;
+    }
+    const p: UserProfile = this.getProfile();
+    if (mutation.kind === 'add_fact') {
+      for (let i: number = 0; i < p.facts.length; i++) if (p.facts[i] === mutation.value) return false;
+      p.facts.push(mutation.value);
+      if (p.facts.length > MAX_FACTS) p.facts = p.facts.slice(-MAX_FACTS);
+      console.info('OHOS_Memory: fact added, count=' + p.facts.length);
+    } else if (mutation.kind === 'set_preference') {
+      if (p.preferences[mutation.key] === mutation.value) return false;
+      p.preferences[mutation.key] = mutation.value;
+      console.info('OHOS_Memory: preference updated, count=' + Object.keys(p.preferences).length);
+    } else if (mutation.kind === 'add_topic') {
+      for (let i: number = 0; i < p.topics.length; i++) if (p.topics[i] === mutation.value) return false;
+      p.topics.push(mutation.value);
+      if (p.topics.length > MAX_TOPICS) p.topics = p.topics.slice(-MAX_TOPICS);
+    } else if (mutation.kind === 'increment') {
+      p.conversationCount++;
+    }
+    p.updatedAt = new Date().toISOString();
+    return true;
+  }
+
+  private static _normalizeProfile(value: UserProfile): UserProfile {
+    return {
+      preferences: value.preferences || {},
+      facts: value.facts || [],
+      topics: value.topics || [],
+      updatedAt: value.updatedAt || new Date().toISOString(),
+      conversationCount: value.conversationCount || 0,
+    };
+  }
+
+  private static _cloneProfile(value: UserProfile): UserProfile {
+    const preferences: Record<string, string> = {};
+    const keys: string[] = Object.keys(value.preferences);
+    for (let i: number = 0; i < keys.length; i++) preferences[keys[i]] = value.preferences[keys[i]];
+    return {
+      preferences,
+      facts: value.facts.slice(),
+      topics: value.topics.slice(),
+      updatedAt: value.updatedAt,
+      conversationCount: value.conversationCount,
+    };
   }
 
   private static _startCleanupTimer(): void {
@@ -294,43 +444,108 @@ export class MemoryManager {
    * 从对话文本中提取关键事实（简易版：基于规则）
    * 后续可以升级为 LLM 自动提取
    */
-  static extractFactsFromConversation(userMsg: string, assistantMsg: string): void {
-    // 简单规则：检测常见的自我介绍和偏好表达
-    const rules: RegExp[] = [
-      /我(姓|叫|是)(.{1,6})[,，。！\s]/,
-      /我(住在|来自|在)(.{1,10})(工作|生活|上学|住)/,
-      /我(喜欢|热爱|爱好|最喜欢)(.{1,20})[,，。！\s]/,
-      /我是(一[个名]).{1,10}(工程师|设计师|学生|老师|医生|程序员|产品|运营|自由职业)/,
-      /我有(.{1,10})(只|条|个|台)(猫|狗|宠物|车)/,
-      /我(今年|已经).{1,5}(岁|岁啦|岁了)/,
-      /(对|关于).{0,10}(敏感|过敏|不喜欢|讨厌)(.{1,20})/,
-    ];
+  static extractFactsFromConversation(userMsg: string, _assistantMsg: string): void {
+    const extraction: StructuredMemoryExtraction = extractStructuredMemory(userMsg);
+    if (extraction.fields.length === 0 && extraction.liked.length === 0 &&
+        extraction.disliked.length === 0 && extraction.facts.length === 0 &&
+        extraction.topics.length === 0) return;
+    this._readyPromise.then((): void => {
+      this._applyStructuredExtraction(extraction);
+    }).catch((e: Error): void => {
+      console.error('OHOS_Memory: structured extraction apply failed=' + String(e));
+    });
+  }
 
-    for (let i: number = 0; i < rules.length; i++) {
-      const match: RegExpExecArray | null = rules[i].exec(userMsg);
-      if (match) {
-        const fact: string = '用户提到：' + match[0].replace(/[,，。！\s]+$/, '');
-        this.addFact(fact);
+  private static _applyStructuredExtraction(extraction: StructuredMemoryExtraction): void {
+    const p: UserProfile = this.getProfile();
+    let changed: boolean = false;
+
+    for (let i: number = 0; i < extraction.fields.length; i++) {
+      const field: MemoryFieldUpdate = extraction.fields[i];
+      if (p.preferences[field.key] !== field.value) {
+        p.preferences[field.key] = field.value;
+        changed = true;
       }
+      if (field.key === '称呼') changed = this._removeLegacyFacts(p, ['我叫', '我姓']) || changed;
+      else if (field.key === '所在地') changed = this._removeLegacyFacts(p, ['我来自', '我住在']) || changed;
+      else if (field.key === '职业') changed = this._removeLegacyFacts(p, ['我是一个', '我是一名']) || changed;
+      else if (field.key === '年龄') changed = this._removeLegacyFacts(p, ['我今年', '我已经']) || changed;
     }
 
-    // 检测话题
-    const topicKeywords: string[][] = [
-      ['天气', '下雨', '下雪', '温度', '台风'],
-      ['编程', '代码', '程序', '开发', '软件', '算法'],
-      ['健康', '跑步', '运动', '健身', '瑜伽', '体检'],
-      ['美食', '做饭', '菜谱', '餐厅', '吃饭'],
-      ['旅行', '旅游', '出差', '机票', '酒店'],
-      ['音乐', '电影', '读书', '小说', '游戏'],
-    ];
-
-    for (let i: number = 0; i < topicKeywords.length; i++) {
-      for (let j: number = 0; j < topicKeywords[i].length; j++) {
-        if (userMsg.indexOf(topicKeywords[i][j]) >= 0) {
-          this.addTopic(topicKeywords[i][0]);
-          break;
-        }
-      }
+    // Positive preferences are applied before negative ones, so an explicit
+    // “不喜欢/不再喜欢” wins if both forms occur in one utterance.
+    for (let i: number = 0; i < extraction.liked.length; i++) {
+      const value: string = extraction.liked[i];
+      changed = this._addPreferenceValue(p, '兴趣偏好', value) || changed;
+      changed = this._removePreferenceValue(p, '不喜欢', value) || changed;
+      changed = this._removeLegacyFacts(p, ['用户喜欢：' + value, '我喜欢' + value]) || changed;
     }
+    for (let i: number = 0; i < extraction.disliked.length; i++) {
+      const value: string = extraction.disliked[i];
+      changed = this._removePreferenceValue(p, '兴趣偏好', value) || changed;
+      changed = this._addPreferenceValue(p, '不喜欢', value) || changed;
+      changed = this._removeLegacyFacts(p, ['用户喜欢：' + value, '我喜欢' + value]) || changed;
+    }
+
+    for (let i: number = 0; i < extraction.facts.length; i++) {
+      if (p.facts.indexOf(extraction.facts[i]) >= 0) continue;
+      p.facts.push(extraction.facts[i]);
+      changed = true;
+    }
+    if (p.facts.length > MAX_FACTS) p.facts = p.facts.slice(-MAX_FACTS);
+
+    for (let i: number = 0; i < extraction.topics.length; i++) {
+      if (p.topics.indexOf(extraction.topics[i]) >= 0) continue;
+      p.topics.push(extraction.topics[i]);
+      changed = true;
+    }
+    if (p.topics.length > MAX_TOPICS) p.topics = p.topics.slice(-MAX_TOPICS);
+
+    if (!changed) return;
+    p.updatedAt = new Date().toISOString();
+    this._saveProfile();
+    console.info('OHOS_Memory: structured memory updated fields=' + Object.keys(p.preferences).length +
+      ' facts=' + p.facts.length + ' topics=' + p.topics.length);
+  }
+
+  private static _preferenceValues(p: UserProfile, key: string): string[] {
+    const value: string = p.preferences[key] || '';
+    if (!value) return [];
+    const raw: string[] = value.split(/[、,，]/);
+    const result: string[] = [];
+    for (let i: number = 0; i < raw.length; i++) {
+      const item: string = raw[i].trim();
+      if (item && result.indexOf(item) < 0) result.push(item);
+    }
+    return result;
+  }
+
+  private static _addPreferenceValue(p: UserProfile, key: string, value: string): boolean {
+    const values: string[] = this._preferenceValues(p, key);
+    if (values.indexOf(value) >= 0) return false;
+    values.push(value);
+    p.preferences[key] = values.join('、');
+    return true;
+  }
+
+  private static _removePreferenceValue(p: UserProfile, key: string, value: string): boolean {
+    const values: string[] = this._preferenceValues(p, key);
+    const index: number = values.indexOf(value);
+    if (index < 0) return false;
+    values.splice(index, 1);
+    if (values.length > 0) p.preferences[key] = values.join('、');
+    else delete p.preferences[key];
+    return true;
+  }
+
+  private static _removeLegacyFacts(p: UserProfile, markers: string[]): boolean {
+    const before: number = p.facts.length;
+    p.facts = p.facts.filter((fact: string): boolean => {
+      for (let i: number = 0; i < markers.length; i++) {
+        if (fact.indexOf(markers[i]) >= 0) return false;
+      }
+      return true;
+    });
+    return before !== p.facts.length;
   }
 }

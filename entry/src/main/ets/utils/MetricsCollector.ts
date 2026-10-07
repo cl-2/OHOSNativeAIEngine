@@ -18,6 +18,7 @@
  */
 
 import nativeLib from 'libnative_lib.so';
+import { fileIo } from '@kit.CoreFileKit';
 
 // ===== 指标类型 ID（与 C++ MetricsData.h 同步） =====
 export const MetricTypeId = {
@@ -30,6 +31,32 @@ export const MetricTypeId = {
   RingBufferFillRate: 6,
   AudioChunkSize: 7,
   LlmLatencyMs: 8,
+  AudioPipelineTotalMs: 9,
+  DcFilterLatencyUs: 10,
+  NoiseSuppressLatencyUs: 11,
+  AecLatencyUs: 12,
+  LlmFirstTokenMs: 13,
+  LlmTokensPerSec: 14,
+  TtsFirstChunkMs: 15,
+  TtsRtf: 16,
+  TtsQueueMs: 17,
+  ProcessRssMb: 18,
+  ProcessPeakMb: 19,
+  TtsThreadCount: 20,
+  LlmPromptTokens: 21,
+  LlmGeneratedTokens: 22,
+  LlmPrefillMs: 23,
+  LlmDecodeMs: 24,
+  LlmBackendSelectMs: 25,
+  LlmBackendLoadMs: 26,
+  LlmModelLoadMs: 27,
+  LlmContextInitMs: 28,
+  CpuDotprod: 29,
+  CpuFp16: 30,
+  LlmBackendTier: 31,
+  AsrOrphanPartialReset: 32,
+  AsrFillerDiscard: 33,
+  AsrDecoderReset: 34,
 } as const;
 
 // ===== 统计计数（仅 ArkTS 侧维护） =====
@@ -41,6 +68,18 @@ let _llmTotalLatency: number = 0;
 export class MetricsCollector {
   private static _initialized: boolean = false;
   private static _storagePath: string = '';
+  private static _sessionStartedAt: number = 0;
+  private static _sessionId: string = '';
+
+  private static pathExists(path: string): boolean {
+    try {
+      return fileIo.accessSync(path);
+    } catch (e) {
+      const message: string = String(e).toLowerCase();
+      if (message.includes('no such file') || message.includes('13900002')) return false;
+      throw e;
+    }
+  }
 
   /**
    * 初始化存储路径（由 Index.ets 在 aboutToAppear 中调用）
@@ -48,9 +87,15 @@ export class MetricsCollector {
   static init(filesDir: string): void {
     if (this._initialized) return;
     this._storagePath = filesDir + '/perf';
+    if (!this.pathExists(this._storagePath)) fileIo.mkdirSync(this._storagePath);
     nativeLib.initMetricsStorage(filesDir);
+    // Diagnostics are session-scoped. Previous exports preserve history; the
+    // active collector must not mix measurements from older app processes.
+    nativeLib.resetMetrics();
+    this._sessionStartedAt = Date.now();
+    this._sessionId = this._sessionStartedAt.toString();
     this._initialized = true;
-    console.info('OHOS_Metrics: MetricsCollector initialized at ' + this._storagePath);
+    console.info('OHOS_Metrics: session=' + this._sessionId + ' initialized at ' + this._storagePath);
   }
 
   /**
@@ -144,6 +189,14 @@ export class MetricsCollector {
 
   static exportJson(): string {
     return nativeLib.exportMetricsJson();
+  }
+
+  static getSessionId(): string {
+    return this._sessionId;
+  }
+
+  static getSessionStartedAt(): number {
+    return this._sessionStartedAt;
   }
 
   static isInitialized(): boolean {

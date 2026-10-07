@@ -1,0 +1,35 @@
+* text=auto
+
+*.ets text eol=lf
+*.ts text eol=lf
+*.cpp text eol=lf
+*.cc text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.cmake text eol=lf
+*.json text eol=lf
+*.json5 text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.patch text eol=lf
+.gitmodules text eol=lf
+
+# Keep GitHub language statistics focused on project-owned code.
+entry/src/main/cpp/third_party/** linguist-vendored
+entry/src/main/cpp/include/onnxruntime/** linguist-vendored
+entry/src/main/cpp/include/sherpa-onnx/** linguist-vendored
+
+# Binary formats
+*.hap binary
+*.hsp binary
+*.app binary
+*.so binary
+*.a binary
+*.onnx binary
+*.gguf binary
+*.p12 binary
+*.p7b binary
+*.cer binary

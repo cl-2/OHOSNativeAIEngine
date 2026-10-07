@@ -3,7 +3,7 @@
 // 用于全双工场景：TTS 播放时消除扬声器回声，保留人声
 //
 // 算法：
-//   1. TTS 回调时记录参考信号（存到环形缓冲区）
+//   1. TTS 实际提交给 AudioRenderer 时记录参考信号（存到 FIFO）
 //   2. 麦克风采集时，用参考信号估计回声路径
 //   3. 从麦克风信号中减去估计的回声，得到纯净人声
 //
@@ -35,7 +35,8 @@ public:
 
     // ========== 公开接口 ==========
 
-    /// 记录 TTS 参考信号（TTS 播放线程调用）
+    /// 记录已提交给 AudioRenderer 的 TTS 参考信号。
+    /// ProcessMicAudio 会按采样顺序消费它，避免使用“最新生成音频”造成时序错位。
     /// @param samples 浮点 PCM 样本 [-1.0, 1.0]
     /// @param n       样本数
     void AddTtsReference(const float* samples, size_t n);
@@ -75,12 +76,16 @@ private:
     // ========== 滤波器系数 ==========
     std::vector<float> m_w;  // 自适应滤波器权重 (冲击响应估计)
 
-    // ========== 参考信号环形缓冲区 ==========
-    // TTS 播放的音频写入此缓冲区，AEC 从中读取作为参考
-    // 容量 = filterLength * 4，保证有足够历史数据
-    std::vector<float> m_refBuffer;
+    // ========== 参考信号 FIFO 与历史帧 ==========
+    // 参考 FIFO 保存已经提交播放的 PCM；历史帧保存与麦克风时间轴对齐的参考信号。
+    std::vector<float> m_refFifo;
+    std::vector<float> m_refHistory;
     size_t             m_refCapacity;
-    size_t             m_refWritePos;  // 写入位置（单调递增，取模）
+    size_t             m_refWritePos;
+    size_t             m_refReadPos;
+    size_t             m_refAvailable;
+    size_t             m_refHistoryPos;
+    size_t             m_refHistoryCount;
     mutable std::mutex m_refMutex;     // 保护参考缓冲区的并发访问
 
     // ========== 状态 ==========

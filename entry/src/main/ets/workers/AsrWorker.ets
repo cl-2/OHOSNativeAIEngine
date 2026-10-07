@@ -8,8 +8,29 @@ let audioCapturer: audio.AudioCapturer | null = null;
 let isRunning: boolean = false;
 let isInitializing: boolean = false;  // 防止并发初始化
 let offlineMode: boolean = false;
+let captureGeneration: number = 0;
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
+
+// Some devices abort inside NapiCapturerReadDataCallback when the voice-
+// communication route is reconfigured by TTS. Pull-mode read avoids that
+// system callback path while retaining the platform AEC source.
+async function runCaptureLoop(capturer: audio.AudioCapturer,
+  bufferSize: number, generation: number): Promise<void> {
+  while (isRunning && generation === captureGeneration) {
+    try {
+      const buffer: ArrayBuffer = await capturer.read(bufferSize, true);
+      if (!isRunning || generation !== captureGeneration) break;
+      if (buffer && buffer.byteLength > 0) nativeLib.feedAudio(buffer);
+    } catch (err) {
+      if (isRunning && generation === captureGeneration) {
+        console.error('OHOS_Native_ai_engine: capturer read failed: ' + String(err));
+        workerPort.postMessage({ msgType: 'asr-capture-error', error: String(err) });
+      }
+      break;
+    }
+  }
+}
 
 // 性能指标推送节流
 let lastPerfReportTime: number = 0;
@@ -21,9 +42,19 @@ workerPort.onmessage = async (e: MessageEvents) => {
   if (msgType === 'prewarmAsr') {
     const asrModelDir: string = e.data['asrModelDir'] as string;
     const vadModelPath: string = e.data['vadModelPath'] as string;
+    const startedAt: number = Date.now();
     console.info('OHOS_Native_ai_engine: AsrWorker prewarming ASR engine...');
-    nativeLib.startAssistant(asrModelDir, vadModelPath, '__prewarm__', (): void => {});
-    console.info('OHOS_Native_ai_engine: AsrWorker prewarm done');
+    try {
+      nativeLib.startAssistant(asrModelDir, vadModelPath, '__prewarm__', (): void => {});
+      const durationMs: number = Date.now() - startedAt;
+      console.info('OHOS_Native_ai_engine: AsrWorker prewarm done in ' + durationMs + 'ms');
+      workerPort.postMessage({ msgType: 'asr-prewarm-done', success: true, durationMs });
+    } catch (e) {
+      workerPort.postMessage({
+        msgType: 'asr-prewarm-done', success: false,
+        durationMs: Date.now() - startedAt, error: String(e)
+      });
+    }
     return;
   }
 
@@ -111,25 +142,21 @@ workerPort.onmessage = async (e: MessageEvents) => {
       const audioCapturerOptions: audio.AudioCapturerOptions = {
         streamInfo: audioStreamInfo,
         capturerInfo: {
-          source: audio.SourceType.SOURCE_TYPE_MIC,
+          // Voice communication route enables the device/system AEC path when supported.
+          source: audio.SourceType.SOURCE_TYPE_VOICE_COMMUNICATION,
           capturerFlags: 0
         }
       };
       audioCapturer = await audio.createAudioCapturer(audioCapturerOptions);
 
-      // 3. 注册录音数据回调
+      // 3. 使用主动读取循环，规避部分设备在通信路由重配置时的 readData 回调崩溃。
       const bufferSize: number = await audioCapturer.getBufferSize();
-
-      let readDataCount: number = 0;
-      audioCapturer.on('readData', (buffer: ArrayBuffer) => {
-        readDataCount++;
-        if (!isRunning) return;
-        // 将麦克风 PCM 数据通过环形缓冲区喂入 native Assistant（无锁、零拷贝）
-        nativeLib.feedAudio(buffer);
-      });
 
       // 4. 开始录音
       await audioCapturer.start();
+      const generation: number = ++captureGeneration;
+      runCaptureLoop(audioCapturer, bufferSize, generation);
+      isInitializing = false;
     } catch (err) {
       const e2 = err as Error;
       const errMsg: string = e2.message || String(err);
@@ -137,6 +164,12 @@ workerPort.onmessage = async (e: MessageEvents) => {
       console.error('OHOS_Native_ai_engine: AsrWorker stack: ' + (e2.stack || 'no stack'));
       isRunning = false;
       isInitializing = false;
+      captureGeneration++;
+      if (audioCapturer) {
+        try { await audioCapturer.stop(); } catch (_stopErr) {}
+        try { await audioCapturer.release(); } catch (_releaseErr) {}
+        audioCapturer = null;
+      }
       workerPort.postMessage({ msgType: 'asr-stopped', error: errMsg });
     }
   }
@@ -145,6 +178,7 @@ workerPort.onmessage = async (e: MessageEvents) => {
     console.info('OHOS_Native_ai_engine: AsrWorker stopAssistant received');
     isRunning = false;
     isInitializing = false;
+    captureGeneration++;
     try {
       if (audioCapturer) {
         await audioCapturer.stop();

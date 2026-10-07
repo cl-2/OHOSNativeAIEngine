@@ -4,6 +4,7 @@
 #include <string>
 #include <functional>
 #include <memory>
+#include <vector>
 
 /**
  * @brief LLM 引擎统一接口
@@ -62,6 +63,13 @@ public:
 
     /// 是否已初始化
     virtual bool IsInitialized() const = 0;
+
+    virtual void CancelGeneration() {}
+    virtual void SaveInterruptedContext() {}
+    // Applies to the next generation only. A value of 0 keeps production
+    // sampling. Diagnostic implementations may force a repeatable non-EOS
+    // decode load for on-device benchmarks.
+    virtual void SetDiagnosticDecodeTokens(int tokens) { (void)tokens; }
 
     /// 引擎类型
     enum class Type { Local, Remote };

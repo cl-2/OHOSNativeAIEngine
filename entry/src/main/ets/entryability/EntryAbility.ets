@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { setAbilityContext } from '../utils/ContextHolder';
+import { RuntimeMemoryManager } from '../utils/RuntimeMemoryManager';
 
 const DOMAIN = 0x0000;
 
@@ -40,11 +41,18 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void {
     // Ability has brought to foreground
+    RuntimeMemoryManager.reportAppForeground();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
   }
 
   onBackground(): void {
     // Ability has back to background
+    RuntimeMemoryManager.reportAppBackground();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+  }
+
+  onMemoryLevel(level: AbilityConstant.MemoryLevel): void {
+    RuntimeMemoryManager.reportMemoryPressure(level as number);
+    hilog.warn(DOMAIN, 'testTag', 'Ability memory pressure level=%{public}d', level);
   }
 }

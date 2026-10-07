@@ -8,9 +8,10 @@
     },
     "externalNativeOptions": {
       "path": "./src/main/cpp/CMakeLists.txt",
-      "arguments": "",
+      "arguments": "-DOHOS_GGML_CPU_VARIANTS=ON",
       "cppFlags": "--std=c++14",
       "abiFilters": [
+        "arm64-v8a",
         "x86_64"
       ]
     }

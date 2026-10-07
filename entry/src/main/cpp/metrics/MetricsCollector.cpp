@@ -6,6 +6,8 @@
 #include <chrono>
 #include <sstream>
 #include <thread>
+#include <cstdio>
+#include <cstring>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -16,8 +18,8 @@
 std::string MetricsCollector::m_storagePath;
 std::mutex MetricsCollector::m_mutex;
 std::unordered_map<uint8_t, std::deque<MetricPoint>> MetricsCollector::m_series;
-bool MetricsCollector::m_enabled = false;
-int64_t MetricsCollector::m_lastSaveTime = 0;
+std::atomic<bool> MetricsCollector::m_enabled{false};
+std::atomic<int64_t> MetricsCollector::m_lastSaveTime{0};
 MetricsCollector::MetricCallback MetricsCollector::m_callback = nullptr;
 
 // ======================== 生命周期 ========================
@@ -32,22 +34,22 @@ void MetricsCollector::Init(const std::string& storagePath) {
 }
 
 void MetricsCollector::SetEnabled(bool enabled) {
-    m_enabled = enabled;
+    m_enabled.store(enabled);
     if (enabled) {
-        m_lastSaveTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
+        m_lastSaveTime.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     }
     OH_LOG_INFO(LOG_APP, "ohos_Metrics %s", enabled ? "enabled" : "disabled");
 }
 
 bool MetricsCollector::IsEnabled() {
-    return m_enabled;
+    return m_enabled.load();
 }
 
 // ======================== 埋点接口 ========================
 
 void MetricsCollector::Record(MetricType type, double value) {
-    if (!m_enabled) return;
+    if (!m_enabled.load()) return;
 
     uint8_t typeId = static_cast<uint8_t>(type);
     int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -79,12 +81,12 @@ void MetricsCollector::RecordAsrRtf(double rtf) {
     Record(MetricType::AsrRtf, rtf);
 }
 
-void MetricsCollector::RecordAsrDecodeLatency(int64_t ms) {
-    Record(MetricType::AsrDecodeLatencyMs, static_cast<double>(ms));
+void MetricsCollector::RecordAsrDecodeLatency(double ms) {
+    Record(MetricType::AsrDecodeLatencyMs, ms);
 }
 
-void MetricsCollector::RecordVadLatency(int64_t ms) {
-    Record(MetricType::VadLatencyMs, static_cast<double>(ms));
+void MetricsCollector::RecordVadLatency(double ms) {
+    Record(MetricType::VadLatencyMs, ms);
 }
 
 void MetricsCollector::RecordTtsGeneration(int64_t ms) {
@@ -97,6 +99,65 @@ void MetricsCollector::RecordRingBufferFillRate(double rate) {
 
 void MetricsCollector::RecordLlmLatency(int64_t ms) {
     Record(MetricType::LlmLatencyMs, static_cast<double>(ms));
+}
+
+void MetricsCollector::RecordAudioPipelineTotal(double ms) {
+    Record(MetricType::AudioPipelineTotalMs, ms);
+}
+
+void MetricsCollector::RecordDcFilterLatency(double us) {
+    Record(MetricType::DcFilterLatencyUs, us);
+}
+
+void MetricsCollector::RecordNoiseSuppressLatency(double us) {
+    Record(MetricType::NoiseSuppressLatencyUs, us);
+}
+
+void MetricsCollector::RecordAecLatency(double us) {
+    Record(MetricType::AecLatencyUs, us);
+}
+
+void MetricsCollector::RecordLlmFirstToken(double ms) {
+    Record(MetricType::LlmFirstTokenMs, ms);
+}
+
+void MetricsCollector::RecordLlmTokensPerSec(double tokensPerSec) {
+    Record(MetricType::LlmTokensPerSec, tokensPerSec);
+}
+
+void MetricsCollector::RecordTtsFirstChunk(double ms) {
+    Record(MetricType::TtsFirstChunkMs, ms);
+}
+
+void MetricsCollector::RecordTtsRtf(double rtf) {
+    Record(MetricType::TtsRtf, rtf);
+}
+
+void MetricsCollector::RecordTtsQueueMs(double ms) {
+    Record(MetricType::TtsQueueMs, ms);
+}
+
+void MetricsCollector::RecordProcessMemory(double rssMb, double peakMb) {
+    Record(MetricType::ProcessRssMb, rssMb);
+    Record(MetricType::ProcessPeakMb, peakMb);
+}
+
+void MetricsCollector::RecordProcessMemorySnapshot() {
+    FILE* file = fopen("/proc/self/status", "r");
+    if (!file) return;
+    double rssMb = 0.0;
+    double peakMb = 0.0;
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        long valueKb = 0;
+        if (sscanf(line, "VmRSS: %ld kB", &valueKb) == 1) {
+            rssMb = static_cast<double>(valueKb) / 1024.0;
+        } else if (sscanf(line, "VmHWM: %ld kB", &valueKb) == 1) {
+            peakMb = static_cast<double>(valueKb) / 1024.0;
+        }
+    }
+    fclose(file);
+    RecordProcessMemory(rssMb, peakMb);
 }
 
 // ======================== 查询接口 ========================
@@ -298,6 +359,11 @@ std::string MetricsCollector::ExportJson() {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     std::ostringstream json;
+    // JSON has no representation for NaN/Infinity. Keep exports parseable even
+    // when a third-party runtime produces a non-finite timing value.
+    auto writeFinite = [&json](double value) {
+        json << (std::isfinite(value) ? value : 0.0);
+    };
     json << "{\n";
     bool firstType = true;
 
@@ -320,10 +386,10 @@ std::string MetricsCollector::ExportJson() {
                 if (pt.value < minVal) minVal = pt.value;
                 if (pt.value > maxVal) maxVal = pt.value;
             }
-            json << "    \"avg\": " << (sum / deque.size()) << ",\n";
-            json << "    \"min\": " << minVal << ",\n";
-            json << "    \"max\": " << maxVal << ",\n";
-            json << "    \"latest\": " << deque.back().value << ",\n";
+            json << "    \"avg\": "; writeFinite(sum / deque.size()); json << ",\n";
+            json << "    \"min\": "; writeFinite(minVal); json << ",\n";
+            json << "    \"max\": "; writeFinite(maxVal); json << ",\n";
+            json << "    \"latest\": "; writeFinite(deque.back().value); json << ",\n";
         }
 
         // 时序数据（前 3 个 + 后 3 个，避免 JSON 过大）
@@ -338,13 +404,13 @@ std::string MetricsCollector::ExportJson() {
                 i = 3;
             }
             if (i > 0) json << ",\n";
-            json << "      { \"t\": " << dit->timestamp << ", \"v\": " << dit->value << " }";
+            json << "      { \"t\": " << dit->timestamp << ", \"v\": ";
+            writeFinite(dit->value);
+            json << " }";
             ++dit;
         }
-        if (n > 6) {
-            json << ",\n      ... truncated " << (n - 6) << " points ...";
-        }
-        json << "\n    ]\n  }";
+        json << "\n    ],\n";
+        json << "    \"truncatedCount\": " << (n > 6 ? n - 6 : 0) << "\n  }";
     }
 
     json << "\n}\n";
@@ -365,8 +431,9 @@ void MetricsCollector::CheckAutoSave() {
     int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 
-    if (now - m_lastSaveTime >= kSaveIntervalMs) {
-        m_lastSaveTime = now;
+    int64_t previous = m_lastSaveTime.load();
+    if (now - previous >= kSaveIntervalMs &&
+        m_lastSaveTime.compare_exchange_strong(previous, now)) {
         // 异步保存，不阻塞调用线程
         std::thread(SaveToDisk).detach();
     }

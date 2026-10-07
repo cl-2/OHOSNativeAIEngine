@@ -132,10 +132,22 @@ void AudioStateMachine::FeedAudio(const float* samples, size_t n) {
 
 void AudioStateMachine::OnVadSpeechStart() {
     LogState("VAD speech START");
-    // 如果正在 TTS 播放，VAD 检测到语音 → 打断
     if (m_currentState.load() == AudioState::TTS_PLAYING) {
-        LogState("VAD interrupt while TTS playing");
-        DoInterrupt();
+        TransitionTo(AudioState::BARGE_IN_CANDIDATE);
+        FireAction("duck_tts", "");
+    }
+}
+
+bool AudioStateMachine::ConfirmBargeIn() {
+    if (m_currentState.load() != AudioState::BARGE_IN_CANDIDATE) return false;
+    DoInterrupt();
+    return m_currentState.load() == AudioState::INTERRUPTED;
+}
+
+void AudioStateMachine::CancelBargeIn() {
+    if (m_currentState.load() == AudioState::BARGE_IN_CANDIDATE) {
+        FireAction("resume_tts", "");
+        TransitionTo(AudioState::TTS_PLAYING);
     }
 }
 
@@ -152,6 +164,9 @@ void AudioStateMachine::OnAsrInterim(const std::string& text) {
     }
     // 通知 ArkTS 显示中间结果（不转换状态）
     FireAction("asr_interim", text);
+    if (m_currentState.load() == AudioState::BARGE_IN_CANDIDATE && text.size() >= 2) {
+        ConfirmBargeIn();
+    }
 }
 
 void AudioStateMachine::OnAsrFinal(const std::string& text) {
@@ -211,6 +226,13 @@ void AudioStateMachine::OnTtsStarted() {
 void AudioStateMachine::OnTtsComplete() {
     LogState("TTS complete");
     if (m_running.load()) {
+        TransitionTo(AudioState::LISTENING);
+    }
+}
+
+void AudioStateMachine::OnBargeInTtsStopped() {
+    LogState("Barge-in TTS stopped");
+    if (m_running.load() && m_currentState.load() == AudioState::INTERRUPTED) {
         TransitionTo(AudioState::LISTENING);
     }
 }
@@ -302,18 +324,9 @@ void AudioStateMachine::WatchdogLoop() {
         AudioState currentState = m_currentState.load();
 
         if (currentState == AudioState::INTERRUPTED) {
-            // INTERRUPTED 停留 m_interruptedAutoMs 后自动回 LISTENING
-            int64_t dur = GetStateDurationMs();
-            if (dur >= m_config.interruptedAutoMs) {
-                if (m_running.load()) {
-                    TransitionTo(AudioState::LISTENING);
-                }
-                continue;
-            }
-            // 等待剩余时间或被打断
-            int waitMs = m_config.interruptedAutoMs - static_cast<int>(dur);
+            // 等待 AudioRenderer 确认停止后再重新开放主 ASR。
             std::unique_lock<std::mutex> lock(m_watchdogMutex);
-            m_watchdogCV.wait_for(lock, std::chrono::milliseconds(std::max(1, waitMs)),
+            m_watchdogCV.wait_for(lock, std::chrono::milliseconds(100),
                 [this]() { return m_watchdogStop.load() || !m_running.load(); });
             continue;
         }

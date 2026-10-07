@@ -1,0 +1,102 @@
+name: Repository checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: Source and credential hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject local signing configuration
+        shell: bash
+        run: |
+          if grep -Eq 'signingConfigs|keyPassword|storePassword|certpath|storeFile' build-profile.json5; then
+            echo 'build-profile.json5 contains machine-local signing configuration.'
+            exit 1
+          fi
+
+      - name: Reject local performance artifacts
+        shell: bash
+        run: |
+          if git ls-files performance | grep -q .; then
+            echo 'The performance directory is local-only and must not be tracked.'
+            git ls-files performance
+            exit 1
+          fi
+
+      - name: Reject model and signing binaries
+        shell: bash
+        run: |
+          blocked="$(git ls-files '*.gguf' '*.onnx' '*.p12' '*.p7b' '*.cer' '*.pem' '*.key')"
+          if [ -n "$blocked" ]; then
+            echo 'Large models or signing material are tracked:'
+            echo "$blocked"
+            exit 1
+          fi
+
+      - name: Reject bundled model payloads
+        shell: bash
+        run: |
+          unexpected="$(
+            git ls-files \
+              entry/src/main/assets/models \
+              entry/src/main/resources/rawfile/models \
+              | grep -v '^entry/src/main/resources/rawfile/models/kws/keywords.txt$' \
+              || true
+          )"
+          if [ -n "$unexpected" ]; then
+            echo 'Model payloads must be prepared locally or distributed through Releases:'
+            echo "$unexpected"
+            exit 1
+          fi
+
+      - name: Check required project files
+        shell: bash
+        run: |
+          for file in \
+            README.md \
+            SECURITY.md \
+            build-profile.json5 \
+            entry/src/main/module.json5 \
+            entry/src/main/cpp/CMakeLists.txt \
+            entry/src/main/cpp/napi_init.cpp; do
+            test -f "$file" || { echo "Missing required file: $file"; exit 1; }
+          done
+
+  native-static-analysis:
+    name: Project-owned C++ static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+
+      - name: Analyze project-owned sources
+        shell: bash
+        run: |
+          cppcheck \
+            --std=c++17 \
+            --enable=warning,performance,portability \
+            --suppress=missingIncludeSystem \
+            --suppress=unmatchedSuppression \
+            --inline-suppr \
+            --error-exitcode=1 \
+            -i entry/src/main/cpp/third_party \
+            -i entry/src/main/cpp/include \
+            entry/src/main/cpp
+
+# HarmonyOS HAP compilation is intentionally not faked on a public runner.
+# Add a DevEco/HarmonyOS SDK self-hosted runner before publishing a build badge.

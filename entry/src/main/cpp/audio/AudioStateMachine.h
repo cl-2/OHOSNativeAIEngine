@@ -29,6 +29,7 @@ enum class AudioState {
     ASR_PROCESSING,     // VAD 结束 → ASR 推理中
     LLM_WAITING,        // 等待 LLM 响应
     TTS_PLAYING,        // TTS 播放中
+    BARGE_IN_CANDIDATE, // 疑似用户说话，TTS 已降音量、等待确认
     INTERRUPTED         // 打断过渡态（自动回到 LISTENING）
 };
 
@@ -39,6 +40,7 @@ inline const char* AudioStateToString(AudioState state) {
         case AudioState::ASR_PROCESSING: return "ASR_PROCESSING";
         case AudioState::LLM_WAITING:    return "LLM_WAITING";
         case AudioState::TTS_PLAYING:    return "TTS_PLAYING";
+        case AudioState::BARGE_IN_CANDIDATE: return "BARGE_IN_CANDIDATE";
         case AudioState::INTERRUPTED:    return "INTERRUPTED";
         default: return "UNKNOWN";
     }
@@ -98,7 +100,7 @@ public:
 
     AudioState GetCurrentState() const { return m_currentState.load(); }
     int64_t GetStateDurationMs() const;
-    bool IsTtsPlaying() const { return m_currentState.load() == AudioState::TTS_PLAYING; }
+    bool IsTtsPlaying() const { auto s = m_currentState.load(); return s == AudioState::TTS_PLAYING || s == AudioState::BARGE_IN_CANDIDATE; }
     bool IsListening() const { return m_currentState.load() == AudioState::LISTENING; }
 
     // ========== 事件（由外部调用） ==========
@@ -108,6 +110,8 @@ public:
 
     /// VAD 检测到语音开始（由 BackgroundAsrThread 调用）
     void OnVadSpeechStart();
+    bool ConfirmBargeIn();
+    void CancelBargeIn();
 
     /// VAD 检测到语音结束（由 BackgroundAsrThread 调用）
     void OnVadSpeechEnd();
@@ -129,6 +133,7 @@ public:
 
     /// TTS 播放完成（由 ArkTS 调用）
     void OnTtsComplete();
+    void OnBargeInTtsStopped();
 
     /// 手动打断（由 ArkTS 调用）
     void Interrupt();
