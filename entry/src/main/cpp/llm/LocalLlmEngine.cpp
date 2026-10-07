@@ -534,9 +534,15 @@ std::string LocalLlmEngine::BuildPrompt(
     if (!context.empty()) {
         // 在最后一个 user 消息后注入上下文
         // <|im_start|>user\n...<|im_end|>\n[AI 当前回复进度: ...]<|im_start|>assistant\n
-        prompt = prompt.substr(0, prompt.size() - 12); // 去掉 last "<|im_start|>assistant\n"
+        static constexpr char kAssistantPrefix[] = "<|im_start|>assistant\n";
+        constexpr size_t kAssistantPrefixLength = sizeof(kAssistantPrefix) - 1;
+        if (prompt.size() >= kAssistantPrefixLength &&
+            prompt.compare(prompt.size() - kAssistantPrefixLength,
+                           kAssistantPrefixLength, kAssistantPrefix) == 0) {
+            prompt.resize(prompt.size() - kAssistantPrefixLength);
+        }
         prompt += context + "\n";
-        prompt += "<|im_start|>assistant\n";
+        prompt += kAssistantPrefix;
     }
 
     return prompt;
