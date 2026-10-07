@@ -35,7 +35,7 @@ LocalLlmEngine::LocalLlmEngine() {
 }
 
 LocalLlmEngine::~LocalLlmEngine() {
-    Release();
+    LocalLlmEngine::Release();
 }
 
 void LocalLlmEngine::Log(const char* msg) {

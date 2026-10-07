@@ -147,10 +147,9 @@ static void SkipJsonValue(const char*& p) {
 // Byte-level BPE 编码器（GPT-2 风格）
 // ============================================================
 
-BpeTokenizer::BpeTokenizer() {
-    m_byteEncoder = BuildByteEncoder();
-    m_byteDecoder = BuildByteDecoder();
-}
+BpeTokenizer::BpeTokenizer()
+    : m_byteEncoder(BuildByteEncoder()),
+      m_byteDecoder(BuildByteDecoder()) {}
 
 BpeTokenizer::~BpeTokenizer() = default;
 

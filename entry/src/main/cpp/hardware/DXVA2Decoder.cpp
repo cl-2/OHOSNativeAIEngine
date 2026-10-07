@@ -37,7 +37,7 @@ DXVA2Decoder::DXVA2Decoder()
 }
 
 DXVA2Decoder::~DXVA2Decoder() {
-    Release();
+    DXVA2Decoder::Release();
 }
 
 bool DXVA2Decoder::InitD3D11() {
@@ -259,7 +259,7 @@ bool DXVA2Decoder::QueueInput(const uint8_t* data, size_t size, int64_t pts) {
     if (!m_isRunning.load()) return false;
 
 #ifdef _WIN32
-    InputSample sample;
+    InputSample sample{};
     sample.data.assign(data, data + size);
     sample.pts = pts;
 

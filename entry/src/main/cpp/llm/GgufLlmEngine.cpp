@@ -223,7 +223,7 @@ GgufLlmEngine::GgufLlmEngine() {
 }
 
 GgufLlmEngine::~GgufLlmEngine() {
-    Release();
+    GgufLlmEngine::Release();
 }
 
 bool GgufLlmEngine::Init(const LlmConfig& config) {

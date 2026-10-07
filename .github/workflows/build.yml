@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Reject local signing configuration
         shell: bash
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install cppcheck
         run: sudo apt-get update && sudo apt-get install -y cppcheck
@@ -87,16 +87,26 @@ jobs:
       - name: Analyze project-owned sources
         shell: bash
         run: |
+          mapfile -t sources < <(
+            git ls-files \
+              'entry/src/main/cpp/*.c' \
+              'entry/src/main/cpp/*.cc' \
+              'entry/src/main/cpp/*.cpp' \
+              | grep -Ev '/(third_party|include)/'
+          )
+          if [ "${#sources[@]}" -eq 0 ]; then
+            echo 'No project-owned C/C++ sources found.'
+            exit 1
+          fi
           cppcheck \
             --std=c++17 \
             --enable=warning,performance,portability \
             --suppress=missingIncludeSystem \
             --suppress=unmatchedSuppression \
+            '--suppress=*:entry/src/main/cpp/third_party/*' \
             --inline-suppr \
             --error-exitcode=1 \
-            -i entry/src/main/cpp/third_party \
-            -i entry/src/main/cpp/include \
-            entry/src/main/cpp
+            "${sources[@]}"
 
 # HarmonyOS HAP compilation is intentionally not faked on a public runner.
 # Add a DevEco/HarmonyOS SDK self-hosted runner before publishing a build badge.

@@ -22,7 +22,7 @@ MediaCodecAdapter::MediaCodecAdapter()
 }
 
 MediaCodecAdapter::~MediaCodecAdapter() {
-    Release();
+    MediaCodecAdapter::Release();
 }
 
 bool MediaCodecAdapter::Init(const std::string& mimeType, bool isEncoder) {

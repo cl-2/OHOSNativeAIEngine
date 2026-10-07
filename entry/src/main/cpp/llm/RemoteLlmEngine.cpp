@@ -11,7 +11,7 @@ RemoteLlmEngine::RemoteLlmEngine() {
 }
 
 RemoteLlmEngine::~RemoteLlmEngine() {
-    Release();
+    RemoteLlmEngine::Release();
 }
 
 bool RemoteLlmEngine::Init(const LlmConfig& config) {
